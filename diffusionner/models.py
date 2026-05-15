@@ -5,10 +5,11 @@ import random
 import torch
 from torch import nn as nn
 from torch.nn import functional as F
-from diffusionner.modeling_albert import AlbertModel, AlbertConfig
+
+# Only import BERT — MuRIL is BERT-based
+# Removed: modeling_albert, modeling_roberta, modeling_xlm_roberta
 from diffusionner.modeling_bert import BertConfig, BertModel
-from diffusionner.modeling_roberta import RobertaConfig, RobertaModel
-from diffusionner.modeling_xlm_roberta import XLMRobertaConfig
+
 from transformers.modeling_utils import PreTrainedModel
 from diffusionner import util
 import logging
@@ -30,12 +31,10 @@ class EntityBoundaryPredictor(nn.Module):
         self.boundary_predictor = nn.Linear(self.hidden_size, 1)
 
     def forward(self, token_embedding, entity_embedding, token_mask):
-        # B x #ent x #token x hidden_size
         entity_token_matrix = self.token_embedding_linear(token_embedding).unsqueeze(1) + self.entity_embedding_linear(entity_embedding).unsqueeze(2)
         entity_token_cls = self.boundary_predictor(torch.relu(entity_token_matrix)).squeeze(-1)
         token_mask = token_mask.unsqueeze(1).expand(-1, entity_token_cls.size(1), -1)
         entity_token_cls[~token_mask] = -1e25
-        # FIX: F.sigmoid is deprecated since PyTorch 1.7; use torch.sigmoid
         entity_token_p = torch.sigmoid(entity_token_cls)
         return entity_token_p
 
@@ -59,7 +58,6 @@ def _get_clones(module, N):
 
 
 def _get_activation_fn(activation):
-    """Return an activation function given a string"""
     if activation == "relu":
         return F.relu
     if activation == "gelu":
@@ -84,7 +82,6 @@ class SpanAttentionLayer(nn.Module):
             self.self_attn = nn.MultiheadAttention(d_model, n_heads, dropout=dropout)
             self.dropout2 = nn.Dropout(dropout)
             self.norm2 = nn.LayerNorm(d_model)
-        # ffn
         self.linear1 = nn.Linear(d_model, d_ffn)
         self.activation = _get_activation_fn(activation)
         self.dropout3 = nn.Dropout(dropout)
@@ -174,7 +171,6 @@ def default(val, d):
 
 
 def extract(a, t, x_shape):
-    """extract the appropriate t index for a batch of indices"""
     batch_size = t.shape[0]
     out = a.gather(-1, t)
     return out.reshape(batch_size, *((1,) * (len(x_shape) - 1)))
@@ -188,10 +184,6 @@ def linear_beta_schedule(timesteps):
 
 
 def cosine_beta_schedule(timesteps, s=0.008):
-    """
-    cosine schedule
-    as proposed in https://openreview.net/forum?id=-NEXDKk8gZ
-    """
     steps = timesteps + 1
     x = torch.linspace(0, timesteps, steps, dtype=torch.float64)
     alphas_cumprod = torch.cos(((x / timesteps) + s) / (1 + s) * math.pi * 0.5) ** 2
@@ -207,7 +199,6 @@ def constant_beta_schedule(timesteps):
 
 
 def get_token(h: torch.tensor, x: torch.tensor, token: int):
-    """ Get specific token embedding (e.g. [CLS]) """
     emb_size = h.shape[-1]
     token_h = h.view(-1, emb_size)
     flat = x.contiguous().view(-1)
@@ -218,7 +209,6 @@ def get_token(h: torch.tensor, x: torch.tensor, token: int):
 class DiffusionNER(PreTrainedModel):
 
     def _init_weights(self, module):
-        """ Initialize the weights """
         if isinstance(module, (nn.Linear, nn.Embedding)):
             module.weight.data.normal_(mean=0.0, std=self.config.initializer_range)
         elif isinstance(module, nn.LayerNorm):
@@ -263,31 +253,23 @@ class DiffusionNER(PreTrainedModel):
         self.step_embed_type = step_embed_type
         self.sample_dist_type = sample_dist_type
 
-        # build backbone
-        if model_type == "roberta":
-            self.roberta = RobertaModel(config)
-            self.model = self.roberta
-
+        # Only BERT backbone supported (MuRIL is BERT-based)
         if model_type == "bert":
             self.bert = BertModel(config)
             self.model = self.bert
             for name, param in self.bert.named_parameters():
                 if "pooler" in name:
                     param.requires_grad = False
-
-        if model_type == "albert":
-            self.albert = AlbertModel(config)
-            self.model = self.albert
+        else:
+            raise ValueError(f"model_type '{model_type}' is not supported. Only 'bert' is supported (use --model_type diffusionner).")
 
         self.lstm_layers = lstm_layers
         if self.lstm_layers > 0:
             self.lstm = nn.LSTM(input_size=config.hidden_size, hidden_size=config.hidden_size // 2, num_layers=self.lstm_layers, bidirectional=True, dropout=prop_drop, batch_first=True)
 
         DiffusionNER._keys_to_ignore_on_save = ["model." + k for k, v in self.model.named_parameters()]
-        # FIX: 'authorized_missing_keys' was renamed to '_keys_to_ignore_on_load_missing' in transformers>=4.5
         DiffusionNER._keys_to_ignore_on_load_missing = ["model." + k for k, v in self.model.named_parameters()]
 
-        # build head
         self.prop_drop = prop_drop
         self.dropout = nn.Dropout(prop_drop)
 
@@ -333,18 +315,9 @@ class DiffusionNER(PreTrainedModel):
             self.has_changed = False
             logger.info(f"Freeze bert weights from begining")
             logger.info("Freeze transformer weights")
-            if self.model_type == "bert":
-                model = self.bert
-            if self.model_type == "roberta":
-                model = self.roberta
-            if self.model_type == "albert":
-                model = self.albert
-            for name, param in model.named_parameters():
+            for name, param in self.bert.named_parameters():
                 param.requires_grad = False
 
-        # FIX: init_weights() was renamed to post_init() in transformers>=4.12.
-        # post_init() calls _init_weights and also handles tied weights.
-        # We try post_init() first and fall back to init_weights() for older installs.
         if hasattr(self, 'post_init'):
             self.post_init()
         else:
@@ -381,7 +354,6 @@ class DiffusionNER(PreTrainedModel):
         self.register_buffer('betas', betas)
         self.register_buffer('alphas_cumprod', alphas_cumprod)
         self.register_buffer('alphas_cumprod_prev', alphas_cumprod_prev)
-
         self.register_buffer('sqrt_alphas_cumprod', torch.sqrt(alphas_cumprod))
         self.register_buffer('sqrt_one_minus_alphas_cumprod', torch.sqrt(1. - alphas_cumprod))
         self.register_buffer('log_one_minus_alphas_cumprod', torch.log(1. - alphas_cumprod))
@@ -389,7 +361,6 @@ class DiffusionNER(PreTrainedModel):
         self.register_buffer('sqrt_recipm1_alphas_cumprod', torch.sqrt(1. / alphas_cumprod - 1))
 
         posterior_variance = betas * (1. - alphas_cumprod_prev) / (1. - alphas_cumprod)
-
         self.register_buffer('posterior_variance', posterior_variance)
         self.register_buffer('posterior_log_variance_clipped', torch.log(posterior_variance.clamp(min=1e-20)))
         self.register_buffer('posterior_mean_coef1', betas * torch.sqrt(alphas_cumprod_prev) / (1. - alphas_cumprod))
@@ -473,7 +444,6 @@ class DiffusionNER(PreTrainedModel):
     def p_sample_loop(self, h_token, h_token_lstm, token_masks):
         batch = token_masks.shape[0]
         shape = (batch, self.num_proposals, 2)
-        # FIX: original code used undefined `device` variable; use self.device (registered buffer device)
         device = self.betas.device
         span = torch.randn(shape, device=device)
         x_start = None
@@ -525,9 +495,7 @@ class DiffusionNER(PreTrainedModel):
             elif self.sample_dist_type == "uniform":
                 noise = torch.rand_like(span)
 
-            span = x_start * alpha_next.sqrt() + \
-                   c * pred_noise + \
-                   sigma * noise
+            span = x_start * alpha_next.sqrt() + c * pred_noise + sigma * noise
 
             if self.span_renewal:
                 score_per_span, boundary_per_span = outputs_class, outputs_coord
@@ -568,12 +536,8 @@ class DiffusionNER(PreTrainedModel):
                 meta_doc=None,
                 epoch=None):
 
-        h_token, h_token_lstm = self.backbone(encodings,
-                                              context_masks,
-                                              token_masks,
-                                              pos_encoding,
-                                              seg_encoding,
-                                              context2token_masks)
+        h_token, h_token_lstm = self.backbone(encodings, context_masks, token_masks,
+                                              pos_encoding, seg_encoding, context2token_masks)
 
         if not self.training:
             results = self.ddim_sample(h_token, h_token_lstm, token_masks)
@@ -798,45 +762,18 @@ class DiffusionNER(PreTrainedModel):
         return left_entity_token_p, right_entity_token_p, entity_logits
 
 
+# Only BertDiffusionNER kept — MuRIL is BERT-based
 class BertDiffusionNER(DiffusionNER):
     config_class = BertConfig
     base_model_prefix = "bert"
-    # FIX: 'authorized_missing_keys' renamed to '_keys_to_ignore_on_load_missing' in transformers>=4.5
     _keys_to_ignore_on_load_missing = [r"position_ids"]
 
     def __init__(self, *args, **kwargs):
         super().__init__("bert", *args, **kwargs)
 
 
-class RobertaDiffusionNER(DiffusionNER):
-    config_class = RobertaConfig
-    base_model_prefix = "roberta"
-
-    def __init__(self, *args, **kwargs):
-        super().__init__("roberta", *args, **kwargs)
-
-
-class XLMRobertaDiffusionNER(DiffusionNER):
-    config_class = XLMRobertaConfig
-    base_model_prefix = "roberta"
-
-    def __init__(self, *args, **kwargs):
-        super().__init__("roberta", *args, **kwargs)
-
-
-class AlbertDiffusionNER(DiffusionNER):
-    config_class = AlbertConfig
-    base_model_prefix = "albert"
-
-    def __init__(self, *args, **kwargs):
-        super().__init__("albert", *args, **kwargs)
-
-
 _MODELS = {
     'diffusionner': BertDiffusionNER,
-    'roberta_diffusionner': RobertaDiffusionNER,
-    'xlmroberta_diffusionner': XLMRobertaDiffusionNER,
-    'albert_diffusionner': AlbertDiffusionNER
 }
 
 
