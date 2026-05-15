@@ -1,9 +1,33 @@
-torch
-transformers==4.20.1
-tqdm==4.54.0
-Jinja2==3.0.1
-scikit-learn==0.23.2
-numpy==1.19.2
-scipy==1.5.4
-pynvml==8.0.4
-tensorboard==2.13.0
+# Updated requirements for Kaggle (PyTorch 2.x, Python 3.10+)
+# Original pinned very old versions incompatible with Python 3.10+
+# See comments for what changed and why.
+
+# transformers: was 4.20.1 — bumped to support Python 3.10 and modern BERT/RoBERTa APIs
+transformers>=4.30.0
+
+# tqdm: was 4.54.0 — minor bump, fully compatible
+tqdm>=4.60.0
+
+# Jinja2: was 3.0.1 — bumped to match Kaggle default; FileSystemLoader API stabilized
+Jinja2>=3.1.0
+
+# scikit-learn: was 0.23.2 — 0.23 requires numpy<1.20 and Python<3.10; use 1.x
+scikit-learn>=1.0.0
+
+# numpy: was 1.19.2 — 1.19 does not support Python 3.10; use 1.23+
+# NOTE: numpy 2.x changed some APIs; pin below 2.0 for safety with older torch extensions
+numpy>=1.23.0,<2.0.0
+
+# scipy: was 1.5.4 — 1.5 requires numpy<1.20; use 1.9+
+scipy>=1.9.0
+
+# pynvml: was 8.0.4 — API changed significantly in v11 (nvmlInit -> pynvml.nvmlInit etc.)
+# If your code uses the old bare function calls, see migration note below.
+# Most users can just update to latest.
+pynvml>=11.0.0
+
+# tensorboard: was 2.13.0 — compatible as-is; keeping same minimum
+tensorboard>=2.13.0
+
+# torch / torchvision: pre-installed on Kaggle — do not pin here to avoid conflicts
+# torch>=2.0.0  # already available on Kaggle GPU instances
