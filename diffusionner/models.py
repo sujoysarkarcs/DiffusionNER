@@ -18,25 +18,25 @@ logger = logging.getLogger()
 ModelPrediction = namedtuple('ModelPrediction', ['pred_noise', 'pred_x_start'])
 
 class EntityBoundaryPredictor(nn.Module):
-    def __init__(self, config, prop_drop = 0.1):
+    def __init__(self, config, prop_drop=0.1):
         super().__init__()
         self.hidden_size = config.hidden_size
         self.token_embedding_linear = nn.Sequential(
             nn.Linear(self.hidden_size, self.hidden_size)
-        ) 
+        )
         self.entity_embedding_linear = nn.Sequential(
             nn.Linear(self.hidden_size, self.hidden_size)
-        ) 
+        )
         self.boundary_predictor = nn.Linear(self.hidden_size, 1)
-    
+
     def forward(self, token_embedding, entity_embedding, token_mask):
         # B x #ent x #token x hidden_size
         entity_token_matrix = self.token_embedding_linear(token_embedding).unsqueeze(1) + self.entity_embedding_linear(entity_embedding).unsqueeze(2)
         entity_token_cls = self.boundary_predictor(torch.relu(entity_token_matrix)).squeeze(-1)
         token_mask = token_mask.unsqueeze(1).expand(-1, entity_token_cls.size(1), -1)
         entity_token_cls[~token_mask] = -1e25
-        # entity_token_p = entity_token_cls.softmax(dim=-1)
-        entity_token_p = F.sigmoid(entity_token_cls)
+        # FIX: F.sigmoid is deprecated since PyTorch 1.7; use torch.sigmoid
+        entity_token_p = torch.sigmoid(entity_token_cls)
         return entity_token_p
 
 
@@ -48,7 +48,7 @@ class EntityTypePredictor(nn.Module):
             nn.GELU(),
             nn.Linear(config.hidden_size, entity_type_count),
         )
-    
+
     def forward(self, h_cls):
         entity_logits = self.classifier(h_cls)
         return entity_logits
@@ -56,7 +56,6 @@ class EntityTypePredictor(nn.Module):
 
 def _get_clones(module, N):
     return nn.ModuleList([copy.deepcopy(module) for i in range(N)])
-
 
 
 def _get_activation_fn(activation):
@@ -71,19 +70,17 @@ def _get_activation_fn(activation):
 
 
 class SpanAttentionLayer(nn.Module):
-    def __init__(self, d_model=768, d_ffn=1024, dropout=0.1, activation="relu", n_heads=8, self_attn = True, cross_attn = True):
+    def __init__(self, d_model=768, d_ffn=1024, dropout=0.1, activation="relu", n_heads=8, self_attn=True, cross_attn=True):
         super().__init__()
 
         self.self_attn_bool = self_attn
         self.cross_attn_bool = cross_attn
 
         if self.cross_attn_bool:
-            # cross attention
             self.cross_attn = nn.MultiheadAttention(d_model, n_heads, dropout=dropout)
             self.dropout1 = nn.Dropout(dropout)
             self.norm1 = nn.LayerNorm(d_model)
         if self.self_attn_bool:
-            # self attention
             self.self_attn = nn.MultiheadAttention(d_model, n_heads, dropout=dropout)
             self.dropout2 = nn.Dropout(dropout)
             self.norm2 = nn.LayerNorm(d_model)
@@ -98,18 +95,16 @@ class SpanAttentionLayer(nn.Module):
     @staticmethod
     def with_pos_embed(tensor, pos):
         return tensor if pos is None else tensor + pos
-        
+
     def forward(self, tgt, pos, src, mask):
         if self.self_attn_bool:
-            # self attention
             q = k = self.with_pos_embed(tgt, pos)
             v = tgt
             tgt2 = self.self_attn(q.transpose(0, 1), k.transpose(0, 1), v.transpose(0, 1))[0].transpose(0, 1)
             tgt = tgt + self.dropout2(tgt2)
             tgt = self.norm2(tgt)
-        
+
         if self.cross_attn_bool:
-            # cross attention
             q = self.with_pos_embed(tgt, pos)
             k = v = src
             tgt2 = self.cross_attn(q.transpose(0, 1), k.transpose(0, 1), v.transpose(0, 1), key_padding_mask=~mask if mask is not None else None)[0].transpose(0, 1)
@@ -122,6 +117,7 @@ class SpanAttentionLayer(nn.Module):
 
         return tgt
 
+
 class SpanAttention(nn.Module):
     def __init__(self, decoder_layer, num_layers):
         super().__init__()
@@ -129,11 +125,10 @@ class SpanAttention(nn.Module):
 
     def forward(self, tgt, pos, src, mask):
         output = tgt
-
         for lid, layer in enumerate(self.layers):
             output = layer(output, pos, src, mask)
-
         return output
+
 
 def span_lw_to_lr(x):
     l, w = x.unbind(-1)
@@ -143,12 +138,13 @@ def span_lw_to_lr(x):
 
 def span_lr_to_lw(x):
     l, r = x.unbind(-1)
-    b = [l, r-l]
+    b = [l, r - l]
     return torch.stack(b, dim=-1)
+
 
 def create_entity_mask(start, end, context_size):
     mask = torch.zeros(context_size, dtype=torch.bool)
-    mask[start:end+1] = 1
+    mask[start:end + 1] = 1
     return mask
 
 
@@ -166,6 +162,7 @@ class SinusoidalPositionEmbeddings(nn.Module):
         embeddings = torch.cat((embeddings.sin(), embeddings.cos()), dim=-1)
         return embeddings
 
+
 def exists(x):
     return x is not None
 
@@ -177,54 +174,52 @@ def default(val, d):
 
 
 def extract(a, t, x_shape):
-    """extract the appropriate  t  index for a batch of indices"""
+    """extract the appropriate t index for a batch of indices"""
     batch_size = t.shape[0]
     out = a.gather(-1, t)
     return out.reshape(batch_size, *((1,) * (len(x_shape) - 1)))
+
 
 def linear_beta_schedule(timesteps):
     scale = 1000 / timesteps
     beta_start = scale * 0.0001
     beta_end = scale * 0.02
-    return torch.linspace(beta_start, beta_end, timesteps, dtype = torch.float64)
+    return torch.linspace(beta_start, beta_end, timesteps, dtype=torch.float64)
 
-def cosine_beta_schedule(timesteps, s = 0.008):
+
+def cosine_beta_schedule(timesteps, s=0.008):
     """
     cosine schedule
     as proposed in https://openreview.net/forum?id=-NEXDKk8gZ
     """
     steps = timesteps + 1
-    x = torch.linspace(0, timesteps, steps, dtype = torch.float64)
+    x = torch.linspace(0, timesteps, steps, dtype=torch.float64)
     alphas_cumprod = torch.cos(((x / timesteps) + s) / (1 + s) * math.pi * 0.5) ** 2
     alphas_cumprod = alphas_cumprod / alphas_cumprod[0]
     betas = 1 - (alphas_cumprod[1:] / alphas_cumprod[:-1])
     return torch.clip(betas, 0, 0.999)
 
+
 def constant_beta_schedule(timesteps):
     scale = 1000 / timesteps
     constant = scale * 0.01
-    return torch.tensor([constant] * timesteps, dtype = torch.float64)
+    return torch.tensor([constant] * timesteps, dtype=torch.float64)
 
 
 def get_token(h: torch.tensor, x: torch.tensor, token: int):
     """ Get specific token embedding (e.g. [CLS]) """
     emb_size = h.shape[-1]
-
     token_h = h.view(-1, emb_size)
     flat = x.contiguous().view(-1)
-
-    # get contextualized embedding of given token
     token_h = token_h[flat == token, :]
-
     return token_h
+
 
 class DiffusionNER(PreTrainedModel):
 
     def _init_weights(self, module):
         """ Initialize the weights """
         if isinstance(module, (nn.Linear, nn.Embedding)):
-            # Slightly different from the TF version which uses truncated_normal for initialization
-            # cf https://github.com/pytorch/pytorch/pull/5617
             module.weight.data.normal_(mean=0.0, std=self.config.initializer_range)
         elif isinstance(module, nn.LayerNorm):
             module.bias.data.zero_()
@@ -234,30 +229,30 @@ class DiffusionNER(PreTrainedModel):
 
     def __init__(
         self,
-        model_type, 
-        config, 
+        model_type,
+        config,
         entity_type_count,
-        lstm_layers = 0,
-        span_attn_layers = 0,
-        timesteps = 1000,
-        beta_schedule = "cosine",
-        p2_loss_weight_gamma = 0., # p2 loss weight, from https://arxiv.org/abs/2204.00227 - 0 is equivalent to weight of 1 across time - 1. is recommended
-        p2_loss_weight_k = 1,
-        sampling_timesteps = 5,
-        num_proposals = 100,
-        scale = 3.0,
-        extand_noise_spans = 'repeat',
-        span_renewal = False,
-        step_ensemble = False,
-        prop_drop = 0.1, 
-        soi_pooling = "maxpool+lrconcat",
-        pos_type = "sine",
-        step_embed_type = "add",
-        sample_dist_type = "normal",
-        split_epoch = 0,
-        pool_type = "max",
-        wo_self_attn = False,
-        wo_cross_attn = False):
+        lstm_layers=0,
+        span_attn_layers=0,
+        timesteps=1000,
+        beta_schedule="cosine",
+        p2_loss_weight_gamma=0.,
+        p2_loss_weight_k=1,
+        sampling_timesteps=5,
+        num_proposals=100,
+        scale=3.0,
+        extand_noise_spans='repeat',
+        span_renewal=False,
+        step_ensemble=False,
+        prop_drop=0.1,
+        soi_pooling="maxpool+lrconcat",
+        pos_type="sine",
+        step_embed_type="add",
+        sample_dist_type="normal",
+        split_epoch=0,
+        pool_type="max",
+        wo_self_attn=False,
+        wo_cross_attn=False):
         super().__init__(config)
         self.model_type = model_type
         self._entity_type_count = entity_type_count
@@ -283,29 +278,30 @@ class DiffusionNER(PreTrainedModel):
         if model_type == "albert":
             self.albert = AlbertModel(config)
             self.model = self.albert
-        
+
         self.lstm_layers = lstm_layers
-        if self.lstm_layers>0:
-            self.lstm = nn.LSTM(input_size = config.hidden_size, hidden_size = config.hidden_size//2, num_layers = self.lstm_layers,  bidirectional = True, dropout = prop_drop, batch_first = True)
-        
-        DiffusionNER._keys_to_ignore_on_save = ["model." + k for k,v in self.model.named_parameters()]
-        DiffusionNER._keys_to_ignore_on_load_missing = ["model." + k for k,v in self.model.named_parameters()]
+        if self.lstm_layers > 0:
+            self.lstm = nn.LSTM(input_size=config.hidden_size, hidden_size=config.hidden_size // 2, num_layers=self.lstm_layers, bidirectional=True, dropout=prop_drop, batch_first=True)
+
+        DiffusionNER._keys_to_ignore_on_save = ["model." + k for k, v in self.model.named_parameters()]
+        # FIX: 'authorized_missing_keys' was renamed to '_keys_to_ignore_on_load_missing' in transformers>=4.5
+        DiffusionNER._keys_to_ignore_on_load_missing = ["model." + k for k, v in self.model.named_parameters()]
 
         # build head
         self.prop_drop = prop_drop
         self.dropout = nn.Dropout(prop_drop)
 
         if "lrconcat" in self.soi_pooling:
-            self.downlinear = nn.Linear(config.hidden_size*2, config.hidden_size)
+            self.downlinear = nn.Linear(config.hidden_size * 2, config.hidden_size)
             self.affine_start = nn.Linear(config.hidden_size, config.hidden_size)
             self.affine_end = nn.Linear(config.hidden_size, config.hidden_size)
 
         if "|" in soi_pooling:
             n = len(soi_pooling.split("|"))
             self.soi_pooling_downlinear = nn.Sequential(
-                    nn.Linear(config.hidden_size*n, config.hidden_size),
-                    nn.GELU()
-                )
+                nn.Linear(config.hidden_size * n, config.hidden_size),
+                nn.GELU()
+            )
 
         if self.span_attn_layers > 0:
             if self.pos_type == "sine":
@@ -315,8 +311,9 @@ class DiffusionNER(PreTrainedModel):
                     nn.GELU(),
                     nn.Linear(config.hidden_size, config.hidden_size),
                 )
-            spanattentionlayer = SpanAttentionLayer(d_model=config.hidden_size, self_attn = not wo_self_attn, cross_attn = not wo_cross_attn)
+            spanattentionlayer = SpanAttentionLayer(d_model=config.hidden_size, self_attn=not wo_self_attn, cross_attn=not wo_cross_attn)
             self.spanattention = SpanAttention(spanattentionlayer, num_layers=self.span_attn_layers)
+
         self.left_boundary_predictor = EntityBoundaryPredictor(config)
         self.right_boundary_predictor = EntityBoundaryPredictor(config)
         self.entity_classifier = EntityTypePredictor(config, entity_type_count)
@@ -327,7 +324,8 @@ class DiffusionNER(PreTrainedModel):
             nn.Linear(config.hidden_size, config.hidden_size),
         )
         if self.step_embed_type == 'scaleshift':
-            self.step_scale_shift = nn.Sequential(nn.SiLU(), nn.Linear(config.hidden_size, config.hidden_size*2))
+            self.step_scale_shift = nn.Sequential(nn.SiLU(), nn.Linear(config.hidden_size, config.hidden_size * 2))
+
         self.split_epoch = split_epoch
         self.has_changed = True
 
@@ -344,7 +342,13 @@ class DiffusionNER(PreTrainedModel):
             for name, param in model.named_parameters():
                 param.requires_grad = False
 
-        self.init_weights()
+        # FIX: init_weights() was renamed to post_init() in transformers>=4.12.
+        # post_init() calls _init_weights and also handles tied weights.
+        # We try post_init() first and fall back to init_weights() for older installs.
+        if hasattr(self, 'post_init'):
+            self.post_init()
+        else:
+            self.init_weights()
 
         # build diffusion
         self.num_proposals = num_proposals
@@ -378,30 +382,23 @@ class DiffusionNER(PreTrainedModel):
         self.register_buffer('alphas_cumprod', alphas_cumprod)
         self.register_buffer('alphas_cumprod_prev', alphas_cumprod_prev)
 
-        # calculations for diffusion q(x_t | x_{t-1}) and others
         self.register_buffer('sqrt_alphas_cumprod', torch.sqrt(alphas_cumprod))
         self.register_buffer('sqrt_one_minus_alphas_cumprod', torch.sqrt(1. - alphas_cumprod))
         self.register_buffer('log_one_minus_alphas_cumprod', torch.log(1. - alphas_cumprod))
         self.register_buffer('sqrt_recip_alphas_cumprod', torch.sqrt(1. / alphas_cumprod))
         self.register_buffer('sqrt_recipm1_alphas_cumprod', torch.sqrt(1. / alphas_cumprod - 1))
 
-        # calculations for posterior q(x_{t-1} | x_t, x_0)
         posterior_variance = betas * (1. - alphas_cumprod_prev) / (1. - alphas_cumprod)
 
-        # above: equal to 1. / (1. / (1. - alpha_cumprod_tm1) + alpha_t / beta_t)
         self.register_buffer('posterior_variance', posterior_variance)
-
-        # below: log calculation clipped because the posterior variance is 0 at the beginning of the diffusion chain
         self.register_buffer('posterior_log_variance_clipped', torch.log(posterior_variance.clamp(min=1e-20)))
         self.register_buffer('posterior_mean_coef1', betas * torch.sqrt(alphas_cumprod_prev) / (1. - alphas_cumprod))
-        self.register_buffer('posterior_mean_coef2',
-                             (1. - alphas_cumprod_prev) * torch.sqrt(alphas) / (1. - alphas_cumprod))
-
+        self.register_buffer('posterior_mean_coef2', (1. - alphas_cumprod_prev) * torch.sqrt(alphas) / (1. - alphas_cumprod))
         self.register_buffer('p2_loss_weight', (p2_loss_weight_k + alphas_cumprod / (1 - alphas_cumprod)) ** -p2_loss_weight_gamma)
 
     def predict_noise_from_start(self, x_t, t, x0):
         return (
-            (extract(self.sqrt_recip_alphas_cumprod, t, x_t.shape) * x_t - x0) / \
+            (extract(self.sqrt_recip_alphas_cumprod, t, x_t.shape) * x_t - x0) /
             extract(self.sqrt_recipm1_alphas_cumprod, t, x_t.shape)
         )
 
@@ -416,20 +413,19 @@ class DiffusionNER(PreTrainedModel):
             extract(self.sqrt_alphas_cumprod, t, x_t.shape) * x_t -
             extract(self.sqrt_one_minus_alphas_cumprod, t, x_t.shape) * v
         )
-    
+
     def model_predictions(self, span, h_token, h_token_lstm, timestep, token_masks, x_self_cond=None, clip_x_start=False):
-        x_span = torch.clamp(span, min=-1 * self.scale, max=self.scale) # -scale -- +scale
-        x_span = ((x_span / self.scale) + 1) / 2 # 0 -- 1
-        x_span = span_lw_to_lr(x_span) # maybe r > 1 
+        x_span = torch.clamp(span, min=-1 * self.scale, max=self.scale)
+        x_span = ((x_span / self.scale) + 1) / 2
+        x_span = span_lw_to_lr(x_span)
         x_span = torch.clamp(x_span, min=0, max=1)
         outputs_logits, outputs_span, left_entity_token_p, right_entity_token_p = self.head(x_span, h_token, h_token_lstm, timestep, token_masks)
-        
-        token_count = token_masks.long().sum(-1,keepdim=True)
+
+        token_count = token_masks.long().sum(-1, keepdim=True)
         token_count_expanded = token_count.unsqueeze(1).expand(-1, span.size(1), span.size(2))
 
-        x_start = outputs_span  # (batch, num_proposals, 4) predict spans: absolute coordinates (x1, y1, x2, y2)
+        x_start = outputs_span
         x_start = x_start / (token_count_expanded - 1 + 1e-20)
-        # x_start = x_start / token_count_expanded
         x_start = span_lr_to_lw(x_start)
         x_start = (x_start * 2 - 1.) * self.scale
         x_start = torch.clamp(x_start, min=-1 * self.scale, max=self.scale)
@@ -437,14 +433,11 @@ class DiffusionNER(PreTrainedModel):
 
         return ModelPrediction(pred_noise, x_start), outputs_logits, outputs_span, left_entity_token_p, right_entity_token_p
 
-    # forward diffusion
     def q_sample(self, x_start, t, noise=None):
         if noise is None:
             noise = torch.randn_like(x_start)
-
         sqrt_alphas_cumprod_t = extract(self.sqrt_alphas_cumprod, t, x_start.shape)
         sqrt_one_minus_alphas_cumprod_t = extract(self.sqrt_one_minus_alphas_cumprod, t, x_start.shape)
-
         return sqrt_alphas_cumprod_t * x_start + sqrt_one_minus_alphas_cumprod_t * noise
 
     def q_posterior(self, x_start, x_t, t):
@@ -456,12 +449,10 @@ class DiffusionNER(PreTrainedModel):
         posterior_log_variance_clipped = extract(self.posterior_log_variance_clipped, t, x_t.shape)
         return posterior_mean, posterior_variance, posterior_log_variance_clipped
 
-    def p_mean_variance(self, span, h_token, h_token_lstm, time_cond, token_masks, self_cond = None, clip_denoised = True):
-        preds, outputs_class, outputs_coord, left_entity_token_p, right_entity_token_p = self.model_predictions(span, h_token, h_token_lstm, time_cond, token_masks,
-                                        self_cond, clip_x_start=clip_denoised)
+    def p_mean_variance(self, span, h_token, h_token_lstm, time_cond, token_masks, self_cond=None, clip_denoised=True):
+        preds, outputs_class, outputs_coord, left_entity_token_p, right_entity_token_p = self.model_predictions(span, h_token, h_token_lstm, time_cond, token_masks, self_cond, clip_x_start=clip_denoised)
         x_start = preds.pred_x_start
-
-        model_mean, posterior_variance, posterior_log_variance = self.q_posterior(x_start = x_start, x_t = span, t = time_cond)
+        model_mean, posterior_variance, posterior_log_variance = self.q_posterior(x_start=x_start, x_t=span, t=time_cond)
         return model_mean, posterior_variance, posterior_log_variance, x_start
 
     @torch.no_grad()
@@ -470,23 +461,22 @@ class DiffusionNER(PreTrainedModel):
         return sample_fn(h_token, h_token_lstm, token_masks)
 
     @torch.no_grad()
-    def p_sample(self, span, h_token, h_token_lstm, t, token_masks, x_self_cond = None, clip_denoised = True):
+    def p_sample(self, span, h_token, h_token_lstm, t, token_masks, x_self_cond=None, clip_denoised=True):
         b, *_, device = *span.shape, span.device
-        batched_times = torch.full((span.shape[0],), t, device = span.device, dtype = torch.long)
-        model_mean, _, model_log_variance, x_start = self.p_mean_variance(span, h_token, h_token_lstm, batched_times, token_masks, self_cond = x_self_cond, clip_denoised = clip_denoised)
-        noise = torch.randn_like(span) if t > 0 else 0. # no noise if t == 0
+        batched_times = torch.full((span.shape[0],), t, device=span.device, dtype=torch.long)
+        model_mean, _, model_log_variance, x_start = self.p_mean_variance(span, h_token, h_token_lstm, batched_times, token_masks, self_cond=x_self_cond, clip_denoised=clip_denoised)
+        noise = torch.randn_like(span) if t > 0 else 0.
         pred = model_mean + (0.5 * model_log_variance).exp() * noise
         return pred, x_start
-
 
     @torch.no_grad()
     def p_sample_loop(self, h_token, h_token_lstm, token_masks):
         batch = token_masks.shape[0]
         shape = (batch, self.num_proposals, 2)
+        # FIX: original code used undefined `device` variable; use self.device (registered buffer device)
+        device = self.betas.device
         span = torch.randn(shape, device=device)
-
         x_start = None
-
         for t in reversed(range(0, self.num_timesteps)):
             self_cond = x_start if self.self_condition else None
             span, x_start = self.p_sample(span, h_token, h_token_lstm, t, token_masks, self_cond)
@@ -505,19 +495,19 @@ class DiffusionNER(PreTrainedModel):
         if self.sample_dist_type == "normal":
             span = torch.randn(shape, device=self.device)
         elif self.sample_dist_type == "uniform":
-            span = (2*torch.rand(shape, device=self.device) - 1) * self.scale
+            span = (2 * torch.rand(shape, device=self.device) - 1) * self.scale
 
         x_start = None
         step_ensemble_outputs_class = []
         step_ensemble_outputs_coord = []
         step_ensemble_left_entity_token_p = []
         step_ensemble_right_entity_token_p = []
+
         for time, time_next in time_pairs:
             time_cond = torch.full((batch,), time, device=self.device, dtype=torch.long)
             self_cond = x_start if self.self_condition else None
 
-            preds, outputs_class, outputs_coord, left_entity_token_p, right_entity_token_p  = self.model_predictions(span, h_token, h_token_lstm, time_cond, token_masks,
-                                                                         self_cond, clip_x_start=clip_denoised)
+            preds, outputs_class, outputs_coord, left_entity_token_p, right_entity_token_p = self.model_predictions(span, h_token, h_token_lstm, time_cond, token_masks, self_cond, clip_x_start=clip_denoised)
             pred_noise, x_start = preds.pred_noise, preds.pred_x_start
 
             if time_next < 0:
@@ -536,10 +526,10 @@ class DiffusionNER(PreTrainedModel):
                 noise = torch.rand_like(span)
 
             span = x_start * alpha_next.sqrt() + \
-                  c * pred_noise + \
-                  sigma * noise
+                   c * pred_noise + \
+                   sigma * noise
 
-            if self.span_renewal:  # filter
+            if self.span_renewal:
                 score_per_span, boundary_per_span = outputs_class, outputs_coord
                 threshold = 0.0
                 score_per_span = F.softmax(score_per_span, dim=-1)
@@ -548,7 +538,7 @@ class DiffusionNER(PreTrainedModel):
                 keep_idx = keep_idx * (boundary_per_span[:, :, 1] >= boundary_per_span[:, :, 0])
                 num_remain = torch.sum(keep_idx)
                 span[~keep_idx] = torch.randn(self.num_proposals * span.size(0) - num_remain, 2, device=span.device).double()
-            
+
             if self.step_ensemble:
                 step_ensemble_outputs_class.append(outputs_class)
                 step_ensemble_outputs_coord.append(outputs_coord)
@@ -557,33 +547,34 @@ class DiffusionNER(PreTrainedModel):
 
         output = {'pred_logits': outputs_class, 'pred_spans': outputs_coord, "pred_left": left_entity_token_p, "pred_right": right_entity_token_p}
         if self.step_ensemble:
-            output = {'pred_logits': torch.cat(step_ensemble_outputs_class, dim = 1), 'pred_spans': torch.cat(step_ensemble_outputs_coord, dim = 1), 
-            "pred_left": torch.cat(step_ensemble_left_entity_token_p, dim = 1), "pred_right": torch.cat(step_ensemble_right_entity_token_p, dim = 1)}
+            output = {
+                'pred_logits': torch.cat(step_ensemble_outputs_class, dim=1),
+                'pred_spans': torch.cat(step_ensemble_outputs_coord, dim=1),
+                "pred_left": torch.cat(step_ensemble_left_entity_token_p, dim=1),
+                "pred_right": torch.cat(step_ensemble_right_entity_token_p, dim=1)
+            }
         return output
 
+    def forward(self,
+                encodings: torch.tensor,
+                context_masks: torch.tensor,
+                token_masks: torch.tensor,
+                context2token_masks: torch.tensor,
+                pos_encoding: torch.tensor = None,
+                seg_encoding: torch.tensor = None,
+                entity_spans: torch.tensor = None,
+                entity_types: torch.tensor = None,
+                entity_masks: torch.tensor = None,
+                meta_doc=None,
+                epoch=None):
 
-    def forward(self, 
-            encodings: torch.tensor,
-            context_masks: torch.tensor,
-            token_masks:torch.tensor,
-            context2token_masks:torch.tensor,
-            pos_encoding: torch.tensor = None,
-            seg_encoding: torch.tensor = None,
-            entity_spans: torch.tensor = None, 
-            entity_types: torch.tensor = None, 
-            entity_masks: torch.tensor = None, 
-            meta_doc = None,
-            epoch = None):
+        h_token, h_token_lstm = self.backbone(encodings,
+                                              context_masks,
+                                              token_masks,
+                                              pos_encoding,
+                                              seg_encoding,
+                                              context2token_masks)
 
-        # Feature Extraction.
-        h_token, h_token_lstm = self.backbone(encodings, 
-                                context_masks, 
-                                token_masks,
-                                pos_encoding, 
-                                seg_encoding, 
-                                context2token_masks)
-
-        # Prepare Proposals.
         if not self.training:
             results = self.ddim_sample(h_token, h_token_lstm, token_masks)
             return results
@@ -595,11 +586,10 @@ class DiffusionNER(PreTrainedModel):
                 for name, param in self.named_parameters():
                     param.requires_grad = True
 
-            d_spans, noises, t = self.prepare_targets(entity_spans, entity_types, entity_masks, token_masks, meta_doc = meta_doc)
+            d_spans, noises, t = self.prepare_targets(entity_spans, entity_types, entity_masks, token_masks, meta_doc=meta_doc)
             t = t.squeeze(-1)
             outputs_class, outputs_span, left_entity_token_p, right_entity_token_p = self.head(d_spans, h_token, h_token_lstm, t, token_masks)
             output = {'pred_logits': outputs_class, 'pred_spans': outputs_span, 'pred_left': left_entity_token_p, 'pred_right': right_entity_token_p}
-
             return output
 
     def prepare_diffusion_repeat(self, gt_spans, gt_num):
@@ -608,13 +598,12 @@ class DiffusionNER(PreTrainedModel):
 
         num_gt = gt_num.item()
         gt_spans = gt_spans[:gt_num]
-        if not num_gt:  # generate fake gt boxes if empty gt boxes
+        if not num_gt:
             gt_spans = torch.as_tensor([[0., 1.]], dtype=torch.float, device=gt_spans.device)
             num_gt = 1
 
-        num_repeat = self.num_proposals // num_gt  # number of repeat except the last gt box in one image
-        repeat_tensor = [num_repeat] * (num_gt - self.num_proposals % num_gt) + [num_repeat + 1] * (
-                self.num_proposals % num_gt)
+        num_repeat = self.num_proposals // num_gt
+        repeat_tensor = [num_repeat] * (num_gt - self.num_proposals % num_gt) + [num_repeat + 1] * (self.num_proposals % num_gt)
         assert sum(repeat_tensor) == self.num_proposals
         random.shuffle(repeat_tensor)
         repeat_tensor = torch.tensor(repeat_tensor, device=self.device)
@@ -622,33 +611,25 @@ class DiffusionNER(PreTrainedModel):
         gt_spans = (gt_spans * 2. - 1.) * self.scale
         x_start = torch.repeat_interleave(gt_spans, repeat_tensor, dim=0)
 
-        # noise sample
         x = self.q_sample(x_start=x_start, t=t, noise=noise)
-
         x = torch.clamp(x, min=-1 * self.scale, max=self.scale)
         x = ((x / self.scale) + 1) / 2.
-
         diff_spans = span_lw_to_lr(x)
         diff_spans = torch.clamp(diff_spans, min=0, max=1)
 
         return diff_spans, noise, t
 
     def prepare_diffusion_concat(self, gt_spans, gt_num):
-        """
-        :param gt_boxes: (cx, cy, w, h), normalized
-        :param num_proposals:
-        """
         t = torch.randint(0, self.num_timesteps, (1,), device=self.device).long()
         noise = torch.randn(self.num_proposals, 2, device=self.device)
-        
+
         num_gt = gt_num.item()
-        if not num_gt:  # generate fake gt boxes if empty gt boxes
+        if not num_gt:
             gt_spans = torch.as_tensor([[0., 1.]], dtype=torch.float, device=gt_spans.device)
             num_gt = 1
 
         if num_gt < self.num_proposals:
-            box_placeholder = torch.randn(self.num_proposals - num_gt, 2,
-                                          device=self.device) / 6. + 0.5  # 3sigma = 1/2 --> sigma: 1/6
+            box_placeholder = torch.randn(self.num_proposals - num_gt, 2, device=self.device) / 6. + 0.5
             box_placeholder[:, 1:] = torch.clip(box_placeholder[:, 1:], min=1e-4)
             x_start = torch.cat((gt_spans, box_placeholder), dim=0)
         elif num_gt > self.num_proposals:
@@ -659,13 +640,9 @@ class DiffusionNER(PreTrainedModel):
             x_start = gt_spans
 
         x_start = (x_start * 2. - 1.) * self.scale
-
-        # noise sample
         x = self.q_sample(x_start=x_start, t=t, noise=noise)
-
         x = torch.clamp(x, min=-1 * self.scale, max=self.scale)
         x = ((x / self.scale) + 1) / 2.
-
         diff_spans = span_lw_to_lr(x)
         diff_spans = torch.clamp(diff_spans, min=0, max=1)
 
@@ -675,10 +652,9 @@ class DiffusionNER(PreTrainedModel):
         diffused_spans = []
         noises = []
         ts = []
-        token_count = token_masks.long().sum(-1,keepdim=True)
+        token_count = token_masks.long().sum(-1, keepdim=True)
         for gt_spans, gt_types, entity_mask, sent_length in zip(entity_spans, entity_types, entity_masks, token_count):
             gt_num = entity_mask.sum()
-            target = {}
             gt_spans = gt_spans / sent_length
             gt_spans = span_lr_to_lw(gt_spans)
             d_spans = d_noise = d_t = None
@@ -686,54 +662,52 @@ class DiffusionNER(PreTrainedModel):
                 d_spans, d_noise, d_t = self.prepare_diffusion_concat(gt_spans, gt_num)
             elif self.extand_noise_spans == "repeat":
                 d_spans, d_noise, d_t = self.prepare_diffusion_repeat(gt_spans, gt_num)
-            
+
             diffused_spans.append(d_spans)
             noises.append(d_noise)
             ts.append(d_t)
 
         return torch.stack(diffused_spans), torch.stack(noises), torch.stack(ts)
 
-    def backbone(self, 
-        encodings: torch.tensor, 
-        context_masks: torch.tensor, 
-        token_masks: torch.tensor,
-        pos_encoding: torch.tensor = None, 
-        seg_encoding: torch.tensor = None, 
-        context2token_masks:torch.tensor = None):
+    def backbone(self,
+                 encodings: torch.tensor,
+                 context_masks: torch.tensor,
+                 token_masks: torch.tensor,
+                 pos_encoding: torch.tensor = None,
+                 seg_encoding: torch.tensor = None,
+                 context2token_masks: torch.tensor = None):
 
         outputs = self.model(
-                    input_ids=encodings,
-                    attention_mask=context_masks,
-                    # token_type_ids=seg_encoding,
-                    position_ids=pos_encoding,
-                    output_hidden_states=True)
-        
+            input_ids=encodings,
+            attention_mask=context_masks,
+            position_ids=pos_encoding,
+            output_hidden_states=True)
+
         h = outputs.hidden_states[-1]
         h_token = util.combine(h, context2token_masks, self.pool_type)
 
         h_token_lstm = None
         if self.lstm_layers > 0:
-            token_count = token_masks.long().sum(-1,keepdim=True)
-            h_token_lstm = nn.utils.rnn.pack_padded_sequence(input = h_token, lengths = token_count.squeeze(-1).cpu().tolist(), enforce_sorted = False, batch_first = True)
+            token_count = token_masks.long().sum(-1, keepdim=True)
+            h_token_lstm = nn.utils.rnn.pack_padded_sequence(input=h_token, lengths=token_count.squeeze(-1).cpu().tolist(), enforce_sorted=False, batch_first=True)
             h_token_lstm, (_, _) = self.lstm(h_token_lstm)
             h_token_lstm, _ = nn.utils.rnn.pad_packed_sequence(h_token_lstm, batch_first=True)
 
         return h_token, h_token_lstm
 
-    def head(self, 
-        span:torch.tensor,
-        h_token:torch.tensor,
-        h_token_lstm:torch.tensor,
-        timestep:torch.tensor,
-        token_masks:torch.tensor):
-        
-        token_count = token_masks.long().sum(-1,keepdim=True)
+    def head(self,
+             span: torch.tensor,
+             h_token: torch.tensor,
+             h_token_lstm: torch.tensor,
+             timestep: torch.tensor,
+             token_masks: torch.tensor):
+
+        token_count = token_masks.long().sum(-1, keepdim=True)
         token_count_expanded = token_count.unsqueeze(1).expand(-1, span.size(1), span.size(2))
 
         old_span = span
         span = old_span * (token_count_expanded - 1)
-        # span = old_span * token_count_expanded
-        
+
         span_mask = None
         if "pool" in self.soi_pooling:
             span_mask = []
@@ -777,15 +751,15 @@ class DiffusionNER(PreTrainedModel):
 
         if "lrconcat" in self.soi_pooling:
             entity_spans_token_inner = torch.round(span).to(dtype=torch.long)
-            entity_spans_token_inner[:,:,0][entity_spans_token_inner[:,:,0]<0] = 0
-            entity_spans_token_inner[:,:,1][entity_spans_token_inner[:,:,1]<0] = 0
-            entity_spans_token_inner[:,:,0][entity_spans_token_inner[:,:,0]>=token_count] = token_count.repeat(1,entity_spans_token_inner.size(1))[entity_spans_token_inner[:,:,0]>=token_count] - 1
-            entity_spans_token_inner[:,:,1][entity_spans_token_inner[:,:,1]>=token_count] = token_count.repeat(1,entity_spans_token_inner.size(1))[entity_spans_token_inner[:,:,1]>=token_count] - 1
+            entity_spans_token_inner[:, :, 0][entity_spans_token_inner[:, :, 0] < 0] = 0
+            entity_spans_token_inner[:, :, 1][entity_spans_token_inner[:, :, 1] < 0] = 0
+            entity_spans_token_inner[:, :, 0][entity_spans_token_inner[:, :, 0] >= token_count] = token_count.repeat(1, entity_spans_token_inner.size(1))[entity_spans_token_inner[:, :, 0] >= token_count] - 1
+            entity_spans_token_inner[:, :, 1][entity_spans_token_inner[:, :, 1] >= token_count] = token_count.repeat(1, entity_spans_token_inner.size(1))[entity_spans_token_inner[:, :, 1] >= token_count] - 1
             start_end_embedding_inner = util.batch_index(h_token_lstm, entity_spans_token_inner)
 
-            start_affined = self.dropout(self.affine_start(start_end_embedding_inner[:,:,0]))
-            end_affined = self.dropout(self.affine_end(start_end_embedding_inner[:,:,1]))
-            
+            start_affined = self.dropout(self.affine_start(start_end_embedding_inner[:, :, 0]))
+            end_affined = self.dropout(self.affine_end(start_end_embedding_inner[:, :, 1]))
+
             embed_inner = [start_affined, end_affined]
             lrconcat_entity_spans_pool = self.dropout(self.downlinear(torch.cat(embed_inner, dim=2)))
             entity_spans_pools.append(lrconcat_entity_spans_pool)
@@ -799,10 +773,8 @@ class DiffusionNER(PreTrainedModel):
         else:
             entity_spans_pool = entity_spans_pools[0]
 
-        if self.span_attn_layers>0:
-
+        if self.span_attn_layers > 0:
             pos = None
-
             if self.pos_type == "same":
                 pos = entity_spans_pool
             elif self.pos_type == "sine":
@@ -818,7 +790,7 @@ class DiffusionNER(PreTrainedModel):
             scale, shift = scale_shift.chunk(2, dim=1)
             entity_spans_pool = entity_spans_pool * (scale + 1) + shift
             entity_spans_pool = entity_spans_pool.view(N, nr_spans, -1)
-            
+
         left_entity_token_p = self.left_boundary_predictor(h_token_lstm, entity_spans_pool, token_masks)
         right_entity_token_p = self.right_boundary_predictor(h_token_lstm, entity_spans_pool, token_masks)
         entity_logits = self.entity_classifier(entity_spans_pool)
@@ -827,37 +799,37 @@ class DiffusionNER(PreTrainedModel):
 
 
 class BertDiffusionNER(DiffusionNER):
-    
     config_class = BertConfig
     base_model_prefix = "bert"
-    authorized_missing_keys = [r"position_ids"]
+    # FIX: 'authorized_missing_keys' renamed to '_keys_to_ignore_on_load_missing' in transformers>=4.5
+    _keys_to_ignore_on_load_missing = [r"position_ids"]
 
-    def __init__(self, *args, **kwagrs):
-        super().__init__("bert", *args, **kwagrs)
+    def __init__(self, *args, **kwargs):
+        super().__init__("bert", *args, **kwargs)
+
 
 class RobertaDiffusionNER(DiffusionNER):
-
     config_class = RobertaConfig
     base_model_prefix = "roberta"
-    
-    def __init__(self, *args, **kwagrs):
-        super().__init__("roberta", *args, **kwagrs)
-    
-class XLMRobertaDiffusionNER(DiffusionNER):
 
+    def __init__(self, *args, **kwargs):
+        super().__init__("roberta", *args, **kwargs)
+
+
+class XLMRobertaDiffusionNER(DiffusionNER):
     config_class = XLMRobertaConfig
     base_model_prefix = "roberta"
-    
-    def __init__(self, *args, **kwagrs):
-        super().__init__("roberta", *args, **kwagrs)
+
+    def __init__(self, *args, **kwargs):
+        super().__init__("roberta", *args, **kwargs)
+
 
 class AlbertDiffusionNER(DiffusionNER):
-
     config_class = AlbertConfig
     base_model_prefix = "albert"
-    
-    def __init__(self, *args, **kwagrs):
-        super().__init__("albert", *args, **kwagrs)
+
+    def __init__(self, *args, **kwargs):
+        super().__init__("albert", *args, **kwargs)
 
 
 _MODELS = {
@@ -866,6 +838,7 @@ _MODELS = {
     'xlmroberta_diffusionner': XLMRobertaDiffusionNER,
     'albert_diffusionner': AlbertDiffusionNER
 }
+
 
 def get_model(name):
     return _MODELS[name]
