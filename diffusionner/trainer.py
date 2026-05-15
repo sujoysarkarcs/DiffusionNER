@@ -14,7 +14,15 @@ from transformers import PreTrainedModel
 from transformers import PreTrainedTokenizer
 
 from diffusionner import util
-import torch.utils.tensorboard as tensorboard
+
+# FIX: more robust tensorboard import compatible with PyTorch 2.x
+try:
+    from torch.utils.tensorboard import SummaryWriter
+except ImportError:
+    try:
+        from tensorboard import SummaryWriter
+    except ImportError:
+        SummaryWriter = None
 
 SCRIPT_PATH = os.path.dirname(os.path.realpath(__file__))
 
@@ -33,7 +41,6 @@ class BaseTrainer:
             self.record = True
 
         # logging
-        # name = str(datetime.datetime.now()).replace(' ', '_') + f'_B{args.train_batch_size}_E{args.epochs}_LR{args.lr}' 
         name = str(datetime.datetime.now()).replace(' ', '_')
         self._log_path = os.path.join(self.args.log_path, self.args.label, name)
         if self.record:
@@ -44,7 +51,7 @@ class BaseTrainer:
             util.create_directories_dir(code_dir)
             for filename in ["args.py", "config_reader.py", "diffusionner.py"]:
                 shutil.copyfile(os.path.join(os.path.dirname(SCRIPT_PATH), filename), os.path.join(code_dir, filename))
-            shutil.copytree(SCRIPT_PATH,  os.path.join(code_dir, "diffusionner"))
+            shutil.copytree(SCRIPT_PATH, os.path.join(code_dir, "diffusionner"))
 
         if hasattr(args, 'save_path') and self.record:
             self._save_path = os.path.join(self.args.save_path, self.args.label, name)
@@ -62,7 +69,6 @@ class BaseTrainer:
             file_handler.setFormatter(log_formatter)
             self._logger.addHandler(file_handler)
 
-
         console_handler = logging.StreamHandler(sys.stdout)
         console_handler.setFormatter(log_formatter)
         if "pretrain" not in self.args.label:
@@ -74,28 +80,30 @@ class BaseTrainer:
             self._logger.setLevel(logging.INFO)
 
         # tensorboard summary
+        self._summary_writer = None
         if self.record:
-            self._summary_writer = tensorboard.SummaryWriter(self._log_path)
+            if SummaryWriter is not None:
+                self._summary_writer = SummaryWriter(self._log_path)
+            else:
+                self._logger.warning("TensorBoard SummaryWriter not available; skipping TB logging.")
 
         self._best_results = dict()
         if self.record:
             self._log_arguments()
 
         # CUDA devices
-        # self._device = torch.device("cuda" if torch.cuda.is_available() and not args.cpu else "cpu")
         if args.cpu:
-            device="cpu"
+            device = "cpu"
         else:
-            device="cuda:" + str(args.device_id)
-
+            device = "cuda:" + str(args.device_id)
 
         # set seed
         if args.seed is not None:
             util.set_seed(args.seed)
 
-        if args.local_rank != -1 and "eval"  not in args.label:
+        if args.local_rank != -1 and "eval" not in args.label:
             torch.cuda.set_device(args.local_rank)
-            torch.distributed.init_process_group(backend='nccl', init_method='env://', rank = args.local_rank, world_size = args.world_size)
+            torch.distributed.init_process_group(backend='nccl', init_method='env://', rank=args.local_rank, world_size=args.world_size)
             self._device = torch.device('cuda', args.local_rank)
         else:
             self._device = torch.device(device)
@@ -125,7 +133,7 @@ class BaseTrainer:
     def _log_csv(self, dataset_label: str, data_label: str, *data: Tuple[object]):
         logs = self._log_paths[dataset_label]
         util.append_csv(logs[data_label], *data)
-    
+
     def _save_model(self, save_path: str, model: PreTrainedModel, tokenizer: PreTrainedTokenizer,
                     iteration: int, optimizer: Optimizer = None, save_as_best: bool = False,
                     extra: dict = None, include_iteration: int = True, name: str = 'model'):
