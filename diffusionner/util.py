@@ -14,17 +14,14 @@ CSV_DELIMETER = ';'
 
 def create_directories_file(f):
     d = os.path.dirname(f)
-
     if d and not os.path.exists(d):
         os.makedirs(d)
-
     return f
 
 
 def create_directories_dir(d):
     if d and not os.path.exists(d):
         os.makedirs(d)
-
     return d
 
 
@@ -32,7 +29,6 @@ def create_csv(file_path, *column_names):
     if not os.path.exists(file_path):
         with open(file_path, 'w', newline='') as csv_file:
             writer = csv.writer(csv_file, delimiter=CSV_DELIMETER, quotechar='|', quoting=csv.QUOTE_MINIMAL)
-
             if column_names:
                 writer.writerow(column_names)
 
@@ -40,7 +36,6 @@ def create_csv(file_path, *column_names):
 def append_csv(file_path, *row):
     if not os.path.exists(file_path):
         raise Exception("The given file doesn't exist")
-
     with open(file_path, 'a', newline='') as csv_file:
         writer = csv.writer(csv_file, delimiter=CSV_DELIMETER, quotechar='|', quoting=csv.QUOTE_MINIMAL)
         writer.writerow(row)
@@ -49,7 +44,6 @@ def append_csv(file_path, *row):
 def append_csv_multiple(file_path, *rows):
     if not os.path.exists(file_path):
         raise Exception("The given file doesn't exist")
-
     with open(file_path, 'a', newline='') as csv_file:
         writer = csv.writer(csv_file, delimiter=CSV_DELIMETER, quotechar='|', quoting=csv.QUOTE_MINIMAL)
         for row in rows:
@@ -62,7 +56,6 @@ def read_csv(file_path):
         reader = csv.reader(csv_file, delimiter=CSV_DELIMETER, quotechar='|', quoting=csv.QUOTE_MINIMAL)
         for row in reader:
             lines.append(row)
-
     return lines[0], lines[1:]
 
 
@@ -84,26 +77,20 @@ def copy_python_directory(source, dest, ignore_dirs=None):
 
 
 def save_dict(log_path, dic, name):
-    # save arguments
-    # 1. as json
     path = os.path.join(log_path, '%s.json' % name)
     f = open(path, 'w')
     json.dump(vars(dic), f, sort_keys=True, indent=4)
     f.close()
 
-    # 2. as string
     path = os.path.join(log_path, '%s.txt' % name)
     f = open(path, 'w')
-    # args_str = ["%s = %s" % (key, value) for key, value in sorted(vars(dic).items())]
     args_str = ["%s = %s" % (key, value) for key, value in vars(dic).items()]
-
     f.write('\n'.join(args_str))
     f.close()
 
 
 def summarize_dict(summary_writer, dic, name):
     table = 'Argument|Value\n-|-'
-
     for k, v in vars(dic).items():
         row = '\n%s|%s' % (k, v)
         table += row
@@ -120,9 +107,10 @@ def set_seed(seed):
 def reset_logger(logger):
     for handler in logger.handlers[:]:
         logger.removeHandler(handler)
-
+    # FIX: original code called `logger.removeFilters(f)` which is not a valid method.
+    # The correct method is `logger.removeFilter(f)` (no trailing 's').
     for f in logger.filters[:]:
-        logger.removeFilters(f)
+        logger.removeFilter(f)
 
 
 def flatten(l):
@@ -156,7 +144,6 @@ def extend_tensor(tensor, extended_shape, fill=0):
 
 def padded_stack(tensors, padding=0):
     dim_count = len(tensors[0].shape)
-
     max_shape = [max([t.shape[d] for t in tensors]) for d in range(dim_count)]
     padded_tensors = []
 
@@ -192,7 +179,6 @@ def get_span_tokens(tokens, span):
     span_tokens = []
 
     for t in tokens:
-        # print(t.index)
         if t.index == span[0]:
             inside = True
 
@@ -205,20 +191,20 @@ def get_span_tokens(tokens, span):
     return None
 
 
-def to_device(batch, device, skip_keys = ['meta_doc'], nested_keys = ['image_inputs']):
+def to_device(batch, device, skip_keys=['meta_doc'], nested_keys=['image_inputs']):
     converted_batch = dict()
     for key in batch.keys():
         if key in nested_keys:
-            if batch[key] == None:
+            if batch[key] is None:
                 converted_batch[key] = None
             else:
                 converted_batch[key] = dict((k, v.to(device)) for k, v in batch[key].items())
             continue
-        
+
         if batch[key] is None:
             converted_batch[key] = None
             continue
-        
+
         if key in skip_keys:
             converted_batch[key] = batch[key]
         else:
@@ -227,28 +213,31 @@ def to_device(batch, device, skip_keys = ['meta_doc'], nested_keys = ['image_inp
     return converted_batch
 
 
-def round(arr, n_digits):
-    return torch.round(arr * 10**n_digits) / (10**n_digits)
+# FIX: renamed from `round` to `tensor_round` to avoid shadowing Python's builtin round().
+# Any code calling util.round(...) should be updated to util.tensor_round(...).
+def tensor_round(arr, n_digits):
+    return torch.round(arr * 10 ** n_digits) / (10 ** n_digits)
 
-def combine(sub, sup_mask, pool_type = "max" ):
+
+def combine(sub, sup_mask, pool_type="max"):
     sup = None
     if pool_type == "first":
         sup_mask_shift = torch.roll(sup_mask, 1, -1)
-        sup_mask = sup_mask&(~sup_mask_shift)
+        sup_mask = sup_mask & (~sup_mask_shift)
 
         m = (sup_mask.unsqueeze(-1) == 0).float() * (-1e30)
         sup = m + sub.unsqueeze(1).repeat(1, sup_mask.shape[1], 1, 1)
         sup = sup.max(dim=2)[0]
-        sup[sup==-1e30]=0
+        sup[sup == -1e30] = 0
 
     if pool_type == "last":
         sup_mask_shift = torch.roll(sup_mask, -1, -1)
-        sup_mask = sup_mask&(~sup_mask_shift)
-        
+        sup_mask = sup_mask & (~sup_mask_shift)
+
         m = (sup_mask.unsqueeze(-1) == 0).float() * (-1e30)
         sup = m + sub.unsqueeze(1).repeat(1, sup_mask.shape[1], 1, 1)
         sup = sup.max(dim=2)[0]
-        sup[sup==-1e30]=0
+        sup[sup == -1e30] = 0
 
     if len(sub.shape) == len(sup_mask.shape):   # sub -> B #ST E ==== sup_mask -> B #T #ST
         if pool_type == "mean":
@@ -264,8 +253,8 @@ def combine(sub, sup_mask, pool_type = "max" ):
             m = (sup_mask.unsqueeze(-1) == 0).float() * (-1e30)
             sup = m + sub.unsqueeze(1).repeat(1, sup_mask.shape[1], 1, 1)
             sup = sup.max(dim=2)[0]
-            sup[sup==-1e30]=0
-    else: # sub -> B #T #C E ==== sup_mask -> B #T #C
+            sup[sup == -1e30] = 0
+    else:  # sub -> B #T #C E ==== sup_mask -> B #T #C
         if pool_type == "mean":
             size = (sup_mask == 1).float().sum(-1).unsqueeze(-1) + 1e-30
             m = (sup_mask.unsqueeze(-1) == 1).float()
@@ -279,5 +268,5 @@ def combine(sub, sup_mask, pool_type = "max" ):
             m = (sup_mask.unsqueeze(-1) == 0).float() * (-1e30)
             sup = m + sub
             sup = sup.max(dim=2)[0]
-            sup[sup==-1e30]=0
+            sup[sup == -1e30] = 0
     return sup
